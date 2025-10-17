@@ -6,12 +6,22 @@
 
 
 #importing libraries 
-from pygame import mixer
 import time
 import tkinter as tk
 from tkinter import ttk
 import zipfile
-from mutagen.mp3 import MP3
+
+# Import pygame and mutagen in a try-except block
+# to allow the app to run without audio support if these libraries fail
+try:
+    from pygame import mixer
+    from mutagen.mp3 import MP3
+    AUDIO_AVAILABLE = True
+except (ImportError, RuntimeError) as e:
+    AUDIO_AVAILABLE = False
+    print(f"Audio support disabled: {e}")
+    # Raise the exception at module level to prevent AudioWidget import
+    raise ImportError("Audio libraries (pygame/mutagen) not available") from e
 
 class AudioWidget(tk.Frame):
     
