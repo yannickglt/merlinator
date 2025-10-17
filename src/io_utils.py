@@ -12,6 +12,18 @@ import zipfile
 import os.path
 import json
 import struct
+import io
+import hashlib
+import base64
+import time
+
+# Import mutagen for MP3 metadata extraction
+try:
+    from mutagen.mp3 import MP3
+    from mutagen.id3 import ID3, APIC
+    MUTAGEN_AVAILABLE = True
+except ImportError:
+    MUTAGEN_AVAILABLE = False
 
 
 bytezero = b'\x00'
@@ -148,7 +160,8 @@ def format_item(item):
     
 
 def export_merlin_to_zip(items, zfile):
-    files_not_found = []        
+    files_not_found = []
+    print(f"📦 Export vers ZIP - Nombre d'items: {len(items)}")
     for item in items:
         imagepath = item['imagepath']
         if imagepath:
@@ -157,10 +170,17 @@ def export_merlin_to_zip(items, zfile):
             if not outfilezippath.exists():
                 if imagepath[-4:] == '.jpg':
                     if os.path.exists(imagepath):
+                        # Redimensionner et sauvegarder l'image avec un timestamp valide
                         with Image.open(imagepath) as image:
-                            image_icon = image.resize((128,128), Image.ANTIALIAS)
-                            with zfile.open(filename, "w") as fout:
-                                image_icon.save(fout, "JPEG", mode='RGB', optimize=False, progressive=False)
+                            image_icon = image.resize((128,128), Image.LANCZOS)
+                            # Sauvegarder dans un buffer temporaire
+                            img_buffer = io.BytesIO()
+                            image_icon.save(img_buffer, "JPEG", mode='RGB', optimize=False, progressive=False)
+                            # Créer ZipInfo avec timestamp valide
+                            zip_info = zipfile.ZipInfo(filename)
+                            zip_info.date_time = time.localtime(time.time())[:6]
+                            zip_info.compress_type = zipfile.ZIP_DEFLATED
+                            zfile.writestr(zip_info, img_buffer.getvalue())
                     else:
                         files_not_found.append(imagepath)
                 else:
@@ -178,9 +198,14 @@ def export_merlin_to_zip(items, zfile):
             if not outfilezippath.exists():
                 if soundpath[-4:] == '.mp3':
                     if os.path.exists(soundpath):
-                        zfile.write(soundpath, filename)
+                        # Créer un ZipInfo avec un timestamp valide (évite les erreurs de fichiers avec dates < 1980)
+                        zip_info = zipfile.ZipInfo(filename)
+                        zip_info.date_time = time.localtime(time.time())[:6]
+                        zip_info.compress_type = zipfile.ZIP_DEFLATED
+                        with open(soundpath, 'rb') as f:
+                            zfile.writestr(zip_info, f.read())
                     else:
-                        file_not_found.append(soundpath)
+                        files_not_found.append(soundpath)
                 else:
                     try:
                         with zipfile.ZipFile(soundpath, "r") as zin:
@@ -188,8 +213,22 @@ def export_merlin_to_zip(items, zfile):
                                 fout.write(zin.read(filename, pwd=info))
                     except IOError:
                         files_not_found.append(filename)
-    with zfile.open("playlist.bin", "w") as fout:
-        write_merlin_playlist(fout, items)
+    
+    print("📝 Écriture de playlist.bin...")
+    try:
+        # Créer playlist.bin dans un buffer avec timestamp valide
+        playlist_buffer = io.BytesIO()
+        write_merlin_playlist(playlist_buffer, items)
+        # Créer ZipInfo avec timestamp valide
+        zip_info = zipfile.ZipInfo("playlist.bin")
+        zip_info.date_time = time.localtime(time.time())[:6]
+        zip_info.compress_type = zipfile.ZIP_DEFLATED
+        zfile.writestr(zip_info, playlist_buffer.getvalue())
+        print("✓ playlist.bin créé avec succès")
+    except Exception as e:
+        print(f"❌ Erreur lors de la création de playlist.bin: {e}")
+        import traceback
+        traceback.print_exc()
     
     return files_not_found
         
@@ -218,3 +257,89 @@ def IsImageProgressive(stream):
             blockSize = blockSize[0] * 256 + blockSize[1] - 2
             stream.seek(blockSize, 1)
     return False
+
+
+def generate_file_hash(filepath, max_length=64):
+    """
+    Génère un hash unique en base64 pour un fichier, compatible avec les systèmes de fichiers.
+    
+    Args:
+        filepath: Chemin vers le fichier
+        max_length: Longueur maximale du hash (64 octets pour Merlin)
+        
+    Returns:
+        String hash en base64 (sans caractères problématiques)
+    """
+    # Calculer le hash SHA256 du fichier
+    sha256_hash = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        # Lire le fichier par chunks pour gérer les gros fichiers
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    
+    # Encoder en base64 et rendre compatible filesystem
+    hash_bytes = sha256_hash.digest()
+    hash_b64 = base64.urlsafe_b64encode(hash_bytes).decode('ascii')
+    
+    # Retirer les caractères de padding et limiter la longueur
+    hash_b64 = hash_b64.rstrip('=')
+    
+    # Limiter à max_length octets (compatibilité Merlin)
+    if len(hash_b64) > max_length:
+        hash_b64 = hash_b64[:max_length]
+    
+    return hash_b64
+
+
+def extract_and_resize_mp3_thumbnail(mp3_filepath, output_image_path):
+    """
+    Extrait la vignette (album art) d'un fichier MP3, la redimensionne à 128x128
+    et la sauvegarde au format JPEG non-progressif.
+    
+    Args:
+        mp3_filepath: Chemin vers le fichier MP3
+        output_image_path: Chemin de sortie pour l'image JPG
+        
+    Returns:
+        True si l'extraction a réussi, False sinon
+    """
+    if not MUTAGEN_AVAILABLE:
+        return False
+    
+    try:
+        # Charger le fichier MP3
+        audio = MP3(mp3_filepath, ID3=ID3)
+        
+        # Rechercher les tags d'image (APIC = Attached Picture)
+        if audio.tags is None:
+            return False
+            
+        # Chercher la pochette d'album
+        image_data = None
+        for tag in audio.tags.values():
+            if isinstance(tag, APIC):
+                image_data = tag.data
+                break
+        
+        if image_data is None:
+            return False
+        
+        # Charger l'image depuis les données binaires
+        image_stream = io.BytesIO(image_data)
+        image = Image.open(image_stream)
+        
+        # Convertir en RGB si nécessaire (pour éviter les problèmes avec RGBA ou autres modes)
+        if image.mode not in ('RGB', 'L'):
+            image = image.convert('RGB')
+        
+        # Redimensionner à 128x128
+        image_resized = image.resize((128, 128), Image.LANCZOS)
+        
+        # Sauvegarder au format JPEG baseline (non-progressif)
+        image_resized.save(output_image_path, 'JPEG', quality=85, optimize=False, progressive=False)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Erreur lors de l'extraction de la vignette: {e}")
+        return False
