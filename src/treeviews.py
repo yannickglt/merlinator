@@ -333,10 +333,22 @@ class MerlinMainTree(MerlinTree):
     def add_menu(self):
         current_node = self.selection()
         iid = self.insert(self.parent(current_node), self.index(current_node)+1, text=' \u25AE Nouveau Menu', tags="directory")
+        
+        # Initialiser tous les champs nécessaires
         self.set(iid, 'type', '6')
         self.set(iid, 'add_time', str(int(time())))
         self.set(iid, 'title', 'Nouveau Menu')
         self.set(iid, 'uuid', str(uuid.uuid4()))
+        self.set(iid, 'fav_order', '0')
+        self.set(iid, 'limit_time', '0')
+        self.set(iid, 'id', '0')
+        self.set(iid, 'parent_id', '0')
+        self.set(iid, 'order', '0')
+        self.set(iid, 'nb_children', '0')
+        self.set(iid, 'imagepath', '')
+        self.set(iid, 'soundpath', '')
+        self.set(iid, 'Favori', '')
+        
         self.focus(iid)
         self.selection_set(iid)
         self.update()
@@ -344,66 +356,288 @@ class MerlinMainTree(MerlinTree):
 
     def add_sound(self):
         current_node = self.selection()
-        playlist_dirname = os.path.dirname(self.rootGUI.playlistpath)
+        playlist_dirname = os.path.dirname(self.rootGUI.playlistpath) if self.rootGUI.playlistpath else os.path.expanduser('~')
         filepaths = filedialog.askopenfilename(initialdir=playlist_dirname, filetypes=[('mp3', '*.mp3')], multiple=True)
         if not filepaths:
             return
         for filepath in filepaths:
             dirname, basename = os.path.split(filepath)
-            # if dirname != playlist_dirname:
-                # answer = tk.messagebox.askyesnocancel("Copier Fichier?", "Copier le fichier dans le dossier de la playlist ?")
-                # if answer is None:
-                    # return
-                # elif answer:
-                    # new_filepath = playlist_dirname + basename
-                    # if os.path.exists(new_filepath):
-                        # answer = tk.messagebox.askokcancel("Fichier existant", "Le fichier existe déjà. L'écraser ?")
-                        # if not answer:
-                            # return
-                    # shutil.copyfile(filepath, new_filepath)
-                    # filepath = new_filepath
-                    # dirname, basename = os.path.split(filepath)        
-            uuid, ext = os.path.splitext(basename)
-            # check length
-            b = uuid.encode('UTF-8')
-            new_filepath = filepath
-            while len(b)>64:
-                b = b[:65]
-                valid = False
-                while not valid:
-                    b = b[:-1]
-                    try:
-                        new_root = b.decode('UTF-8')
-                        valid = uuid.startswith(new_root)
-                    except UnicodeError:
-                        pass
-                new_basename = newroot + ext
-                answer = tk.messagebox.askokcancel("Nom de fichier trop long", f"Le nom de fichier '{basename}' est trop long.\nLe copier sous un nouveau nom ?")
-                if not answer:
-                    return
-                new_filepath = tk.filedialog.asksaveasfilename(initialdir=dirname, initialfile=new_basename, filetypes=[('mp3', '*.mp3')], multiple=False)
-                if not new_filepath:
-                    return
-                new_dirname, new_basename = os.path.split(new_filepath)
-                new_uuid, ext = os.path.splitext(new_basename)
-                b = new_uuid.encode('UTF-8')
-            if new_filepath != filepath:
-                uuid = new_uuid
-                filepath = new_filepath                
-                shutil.copyfile(filepath, new_filepath)
-            iid = self.insert(self.parent(current_node), self.index(current_node)+1, text=' \u266A ' + uuid, tags='sound')
+            original_name = os.path.splitext(basename)[0]  # Nom original sans extension
+            
+            # Générer un hash unique basé sur le contenu du fichier
+            uuid = generate_file_hash(filepath, max_length=64)
+            
+            # Utiliser le nom original comme titre d'affichage
+            display_title = original_name
+            
+            iid = self.insert(self.parent(current_node), self.index(current_node)+1, text=' \u266A ' + display_title, tags='sound')
+            
+            # Initialiser tous les champs nécessaires
             self.set(iid, 'type', '4')
             self.set(iid, 'soundpath', filepath)
             self.set(iid, 'add_time', str(int(time())))
             self.set(iid, 'uuid', uuid)
+            self.set(iid, 'title', display_title)
+            self.set(iid, 'fav_order', '0')
+            self.set(iid, 'limit_time', '0')
+            self.set(iid, 'id', '0')
+            self.set(iid, 'parent_id', '0')
+            self.set(iid, 'order', '0')
+            self.set(iid, 'nb_children', '0')
+            self.set(iid, 'Favori', '')
+            
+            # Tenter d'extraire automatiquement la vignette du MP3
+            image_path = os.path.join(dirname, uuid + '.jpg')
+            if extract_and_resize_mp3_thumbnail(filepath, image_path):
+                # Charger la vignette dans l'interface
+                try:
+                    with Image.open(image_path) as img:
+                        image_small = img.resize((40, 40), Image.LANCZOS)
+                        self.rootGUI.thumbnails[uuid] = ImageTk.PhotoImage(image_small)
+                    self.item(iid, image=self.rootGUI.thumbnails[uuid])
+                    self.set(iid, 'imagepath', image_path)
+                    print(f"✓ Vignette extraite et associée à '{uuid}'")
+                except Exception as e:
+                    print(f"Erreur lors du chargement de la vignette: {e}")
+            else:
+                # Pas de vignette trouvée, mettre une vignette vide
+                self.rootGUI.thumbnails[uuid] = ''
+                self.set(iid, 'imagepath', '')
+                
         if len(filepaths)==1:
             self.focus(iid)
             self.selection_set(iid)
         self.update()
 
+    def add_album(self):
+        """
+        Ajoute un ou plusieurs dossiers comme albums.
+        Si un dossier contient des MP3, il devient un album.
+        Si un dossier contient d'autres dossiers avec des MP3, chaque sous-dossier devient un album.
+        """
+        current_node = self.selection()
+        playlist_dirname = os.path.dirname(self.rootGUI.playlistpath) if self.rootGUI.playlistpath else os.path.expanduser('~')
+        
+        # Sélectionner un dossier
+        folder_path = filedialog.askdirectory(initialdir=playlist_dirname, 
+                                               title="Sélectionner un dossier (ou dossier parent d'albums)")
+        if not folder_path:
+            return
+        
+        # Détecter les dossiers à traiter
+        albums_to_add = self._detect_albums(folder_path)
+        
+        if not albums_to_add:
+            tk.messagebox.showinfo("Aucun album", "Aucun dossier contenant des MP3 n'a été trouvé.")
+            return
+        
+        # Demander confirmation si plusieurs albums
+        if len(albums_to_add) > 1:
+            album_names = '\n'.join([f"  • {os.path.basename(path)}" for path in albums_to_add[:10]])
+            if len(albums_to_add) > 10:
+                album_names += f"\n  ... et {len(albums_to_add) - 10} autres"
+            
+            response = tk.messagebox.askyesno(
+                "Plusieurs albums détectés",
+                f"{len(albums_to_add)} album(s) détecté(s) :\n\n{album_names}\n\nAjouter tous ces albums ?"
+            )
+            if not response:
+                return
+        
+        # Ajouter chaque album
+        total_tracks = 0
+        last_album_iid = None
+        for album_path in albums_to_add:
+            album_iid, tracks = self._add_single_album(current_node, album_path)
+            total_tracks += tracks
+            if album_iid:
+                last_album_iid = album_iid
+        
+        # Ouvrir le menu parent pour voir les albums ajoutés
+        if current_node and self.tag_has('directory', current_node):
+            self.item(current_node, open=True)
+        
+        # Sélectionner le dernier album ajouté
+        if last_album_iid:
+            self.focus(last_album_iid)
+            self.selection_set(last_album_iid)
+            self.see(last_album_iid)
+        
+        self.update()
+        
+        # Message de confirmation
+        tk.messagebox.showinfo(
+            "Albums ajoutés",
+            f"{len(albums_to_add)} album(s) ajouté(s) avec {total_tracks} piste(s) au total"
+        )
+    
+    def _detect_albums(self, folder_path):
+        """
+        Détecte les dossiers d'albums (contenant des MP3) dans un dossier.
+        Retourne une liste de chemins vers les albums.
+        """
+        albums = []
+        
+        # Vérifier si le dossier lui-même contient des MP3
+        has_mp3 = any(f.lower().endswith('.mp3') for f in os.listdir(folder_path) 
+                      if os.path.isfile(os.path.join(folder_path, f)))
+        
+        if has_mp3:
+            # Le dossier lui-même est un album
+            albums.append(folder_path)
+        else:
+            # Chercher dans les sous-dossiers
+            for item in os.listdir(folder_path):
+                item_path = os.path.join(folder_path, item)
+                if os.path.isdir(item_path):
+                    # Vérifier si ce sous-dossier contient des MP3
+                    try:
+                        has_mp3_sub = any(f.lower().endswith('.mp3') for f in os.listdir(item_path)
+                                         if os.path.isfile(os.path.join(item_path, f)))
+                        if has_mp3_sub:
+                            albums.append(item_path)
+                    except PermissionError:
+                        print(f"⚠️  Accès refusé à {item_path}")
+                        continue
+        
+        return sorted(albums)
+    
+    def _add_single_album(self, current_node, folder_path):
+        """
+        Ajoute un seul album. Retourne le nombre de pistes ajoutées.
+        """
+        folder_name = os.path.basename(folder_path)
+        
+        # Déterminer où créer l'album
+        if not current_node:
+            # Rien n'est sélectionné : créer à la racine
+            parent = ''
+            position = 'end'
+        elif self.tag_has('directory', current_node):
+            # Un menu est sélectionné : créer DEDANS
+            parent = current_node
+            position = 'end'
+        else:
+            # Un son est sélectionné : créer au même niveau (comme frère)
+            parent = self.parent(current_node)
+            position = self.index(current_node) + 1
+        
+        # Créer le menu (album)
+        menu_iid = self.insert(parent, position, 
+                               text=' \u25AE ' + folder_name, tags="directory")
+        
+        # Initialiser tous les champs du menu
+        menu_uuid = str(uuid.uuid4())
+        self.set(menu_iid, 'type', '6')
+        self.set(menu_iid, 'add_time', str(int(time.time())))
+        self.set(menu_iid, 'title', folder_name)
+        self.set(menu_iid, 'uuid', menu_uuid)
+        self.set(menu_iid, 'fav_order', '0')
+        self.set(menu_iid, 'limit_time', '0')
+        self.set(menu_iid, 'id', '0')
+        self.set(menu_iid, 'parent_id', '0')
+        self.set(menu_iid, 'order', '0')
+        self.set(menu_iid, 'nb_children', '0')
+        self.set(menu_iid, 'imagepath', '')
+        self.set(menu_iid, 'soundpath', '')
+        self.set(menu_iid, 'Favori', '')
+        
+        # Lister tous les fichiers MP3 dans le dossier
+        mp3_files = []
+        print(f"📂 Scan du dossier : {folder_path}")
+        for filename in os.listdir(folder_path):
+            if filename.lower().endswith('.mp3'):
+                full_path = os.path.join(folder_path, filename)
+                mp3_files.append(full_path)
+                print(f"  → MP3 trouvé : {filename}")
+        
+        # Trier par nom de fichier
+        mp3_files.sort()
+        
+        print(f"📊 Total MP3 trouvés : {len(mp3_files)}")
+        
+        if not mp3_files:
+            print(f"⚠️  Aucun MP3 dans {folder_name}")
+            self.delete(menu_iid)
+            return None, 0
+        
+        menu_image_path = None
+        
+        # Ajouter chaque MP3 comme son dans le menu
+        print(f"🎵 Ajout des MP3 dans le menu '{folder_name}'...")
+        for idx, mp3_path in enumerate(mp3_files, 1):
+            basename = os.path.basename(mp3_path)
+            original_name = os.path.splitext(basename)[0]
+            
+            print(f"  [{idx}/{len(mp3_files)}] Traitement de '{original_name}'...")
+            
+            # Générer un hash unique
+            file_uuid = generate_file_hash(mp3_path, max_length=64)
+            print(f"    Hash généré : {file_uuid[:20]}...")
+            
+            # Créer le son dans le menu
+            sound_iid = self.insert(menu_iid, 'end', text=' \u266A ' + original_name, tags='sound')
+            print(f"    Son créé avec iid : {sound_iid}")
+            
+            # Initialiser tous les champs
+            self.set(sound_iid, 'type', '4')
+            self.set(sound_iid, 'soundpath', mp3_path)
+            self.set(sound_iid, 'add_time', str(int(time.time())))
+            self.set(sound_iid, 'uuid', file_uuid)
+            self.set(sound_iid, 'title', original_name)
+            self.set(sound_iid, 'fav_order', '0')
+            self.set(sound_iid, 'limit_time', '0')
+            self.set(sound_iid, 'id', '0')
+            self.set(sound_iid, 'parent_id', '0')
+            self.set(sound_iid, 'order', '0')
+            self.set(sound_iid, 'nb_children', '0')
+            self.set(sound_iid, 'Favori', '')
+            
+            # Extraire la vignette
+            image_path = os.path.join(folder_path, file_uuid + '.jpg')
+            if extract_and_resize_mp3_thumbnail(mp3_path, image_path):
+                try:
+                    with Image.open(image_path) as img:
+                        image_small = img.resize((40, 40), Image.LANCZOS)
+                        self.rootGUI.thumbnails[file_uuid] = ImageTk.PhotoImage(image_small)
+                    self.item(sound_iid, image=self.rootGUI.thumbnails[file_uuid])
+                    self.set(sound_iid, 'imagepath', image_path)
+                    
+                    # Utiliser la première vignette trouvée pour le menu
+                    if menu_image_path is None:
+                        menu_image_path = image_path
+                    
+                    print(f"✓ Vignette extraite pour '{original_name}'")
+                except Exception as e:
+                    print(f"Erreur lors du chargement de la vignette: {e}")
+                    self.rootGUI.thumbnails[file_uuid] = ''
+                    self.set(sound_iid, 'imagepath', '')
+            else:
+                self.rootGUI.thumbnails[file_uuid] = ''
+                self.set(sound_iid, 'imagepath', '')
+        
+        # Appliquer la première vignette au menu
+        if menu_image_path:
+            try:
+                with Image.open(menu_image_path) as img:
+                    image_small = img.resize((40, 40), Image.LANCZOS)
+                    self.rootGUI.thumbnails[menu_uuid] = ImageTk.PhotoImage(image_small)
+                self.item(menu_iid, image=self.rootGUI.thumbnails[menu_uuid])
+                self.set(menu_iid, 'imagepath', menu_image_path)
+                print(f"✓ Image du menu '{folder_name}' définie")
+            except Exception as e:
+                print(f"Erreur lors de la définition de l'image du menu: {e}")
+        
+        # Ouvrir le menu pour voir son contenu
+        self.item(menu_iid, open=True)
+        self.update()
+        
+        print(f"✅ Album '{folder_name}' ajouté avec {len(mp3_files)} piste(s)")
+        return menu_iid, len(mp3_files)
+
     def select_image(self):
         current_node = self.selection()
-        playlist_dirname = os.path.dirname(self.rootGUI.playlistpath)
+        playlist_dirname = os.path.dirname(self.rootGUI.playlistpath) if self.rootGUI.playlistpath else os.path.expanduser('~')
         if not current_node:
             return
         uuid = self.set(current_node, 'uuid')
