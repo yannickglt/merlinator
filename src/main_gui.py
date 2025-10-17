@@ -32,6 +32,7 @@ class MerlinGUI(GUIActions):
         
         self.sessionpath = ''
         self.sessionfile = None
+        self.playlistpath = ''  # Initialize playlistpath
         self.thumbnails = {}
         self.moveitem = tk.StringVar()
         self.src_widget = None
@@ -123,11 +124,13 @@ class MerlinGUI(GUIActions):
         self.buttonSelectImage = tk.Button(self.edition_area, text="Changer image", state='disabled', command=self.main_tree.select_image)
         self.buttonAddMenu = tk.Button(self.edition_area, text="Nouveau Menu", state='disabled', command=self.main_tree.add_menu)
         self.buttonAddSound = tk.Button(self.edition_area, text="Nouveau Son", state='disabled', command=self.main_tree.add_sound)
+        self.buttonAddAlbum = tk.Button(self.edition_area, text="📁 Ajouter Album", state='disabled', command=self.main_tree.add_album, bg='#4CAF50', fg='white')
                 
         self.buttonSelectImage.grid(row=0, column=1, sticky='ew')
         self.buttonDelete.grid(row=1, column=1, sticky='ew')
         self.buttonAddMenu.grid(row=0, column=0, sticky='ew')
         self.buttonAddSound.grid(row=1, column=0, sticky='ew')
+        self.buttonAddAlbum.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(5,0))
         
         
         # Displacement Buttons
@@ -313,6 +316,7 @@ class MerlinGUI(GUIActions):
             self.populate_trees(items, overwrite)
             self.buttonAddMenu['state'] = 'normal'
             self.buttonAddSound['state'] = 'normal'
+            self.buttonAddAlbum['state'] = 'normal'
         except IOError:
             tk.messagebox.showwarning("Erreur", "Fichier non accessible")
           
@@ -352,6 +356,7 @@ class MerlinGUI(GUIActions):
         self.populate_trees(items, overwrite=True)
         self.buttonAddMenu['state'] = 'normal'
         self.buttonAddSound['state'] = 'normal'
+        self.buttonAddAlbum['state'] = 'normal'
         
     def save_session(self):
         if not self.sessionfile:
@@ -397,6 +402,7 @@ class MerlinGUI(GUIActions):
             self.populate_trees(items)
             self.buttonAddMenu['state'] = 'normal'
             self.buttonAddSound['state'] = 'normal'
+            self.buttonAddAlbum['state'] = 'normal'
         except IOError:
             tk.messagebox.showwarning("Erreur", "Fichier non accessible")        
         
